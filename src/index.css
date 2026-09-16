@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --font-display: 'Cinzel', serif;
+  }
+
+  body {
+    font-family: var(--font-mono);
+    background-color: #000000;
+    color: #fce7f3;
+    overflow-x: hidden;
+  }
+
+  /* Custom Rose/Pink-on-Black scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #000000;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2a1122;
+    border-radius: 9999px;
+    border: 1px solid #4a1532;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #f472b6;
+  }
+}
+
+.glow-rose {
+  box-shadow: 0 0 25px -5px rgba(244, 63, 94, 0.25);
+}
+
+.glow-rose-sm {
+  box-shadow: 0 0 12px -2px rgba(244, 63, 94, 0.2);
+}
+
+.glow-rose-text {
+  text-shadow: 0 0 12px rgba(244, 63, 94, 0.35);
+}

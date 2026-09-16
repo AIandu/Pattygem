@@ -1,0 +1,6 @@
+{
+  "name": "Patty - Cognitive Predictive Partner",
+  "description": "Cognitive predictive personal partner & twin mind for Loretta with GitHub codebase intelligence, predictive decision engine, and voice command center.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
