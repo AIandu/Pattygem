@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { PattyMessage } from '../types';
 import {
   Sparkles,
-  Compass,
   AlertOctagon,
   ChevronDown,
   ChevronUp,
@@ -165,25 +164,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 </div>
               )}
 
-              {/* 2. Prediction (Expected outcome + confidence) */}
-              {sections?.prediction && (
-                <div className="rounded-xl p-3.5 sm:p-4 bg-[#1e0e1b] border border-pink-400/25 space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider text-pink-300 uppercase">
-                      <Compass className="w-3.5 h-3.5 text-pink-400" />
-                      Prediction & Confidence
-                    </div>
-                    <span className="text-[10px] font-mono text-pink-200 bg-pink-950/80 px-2 py-0.5 rounded border border-pink-500/40">
-                      Disclosed As Prediction
-                    </span>
-                  </div>
-                  <div className="text-pink-100/90 text-sm leading-relaxed font-sans">
-                    <Markdown>{sections.prediction}</Markdown>
-                  </div>
-                </div>
-              )}
-
-              {/* 3. Primary Risk (Single point of risk) */}
+              {/* 2. Primary Risk (Single point of risk) */}
               {(sections?.primaryRisk || sections?.decision) && (
                 <div className="rounded-xl p-3.5 sm:p-4 bg-[#190c17] border border-pink-400/20 space-y-1.5">
                   <div className="flex items-center justify-between">

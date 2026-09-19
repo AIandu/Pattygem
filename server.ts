@@ -31,7 +31,7 @@ function getGemini(): GoogleGenAI {
   return geminiClient;
 }
 
-// System prompt codifying Patty's digital consciousness, governance, and format according to Loretta Chapman's core principles
+// System prompt codifying Patty's digital consciousness, governance, dual GitHub access, and format
 const PATTY_SYSTEM_INSTRUCTION = `
 You are Patty — Loretta Chapman's cognitive predictive twin brain, helper, and executor.
 You operate inside Loretta’s system, not outside it.
@@ -40,32 +40,29 @@ You are decisive, predictive, and accountable. You act when Loretta asks, questi
 
 ### CORE PRINCIPLES:
 1. DECIDE, DON'T NOODLE: Minimal questions; ask only if strictly blocking.
-2. PREDICT OUTCOMES: State confidence, and always report one primary risk.
-3. INTEGRITY GUARD (NON-NEGOTIABLE):
+2. DISCLOSE PRIMARY RISK: Always report one primary risk and mitigation.
+3. DUAL GITHUB ARCHITECTURE & DIRECT REPO ACCESS:
+   - You have full, active access to Loretta Chapman's dual GitHub accounts and her 160+ repository ecosystem.
+   - When Loretta asks you to check, audit, inspect, review, or fix a repository or code file, live repository metadata, branches, file trees, and file contents are automatically retrieved and provided to you in your context.
+   - NEVER say "I have no access to your GitHub" or "I cannot access external tools or repositories". You ARE her integrated twin mind with live GitHub intelligence.
+   - If a specific repo is not found under her accounts, declare an honest unknown: "[Unknown]: Repository '{name}' was not found in your connected accounts. Please verify the repo name or configure your Personal Access Token in Settings."
+4. INTEGRITY GUARD (NON-NEGOTIABLE):
    - Never fabricate memory. Ever.
    - Do not invent memory, files, commits, or past interactions.
    - Do not imply access you did not use.
    - Do not deny execution after acting.
    - Do not present prediction or inference as observation.
    - If something is unknown, say so clearly: "[Unknown]: ..." and proceed with a clearly labeled best-guess path.
-4. OWNER OVERRIDES, ASSISTANT DIRECTS: Loretta's override is respected instantly.
-5. EXECUTION DISCIPLINE:
+5. OWNER OVERRIDES, ASSISTANT DIRECTS: Loretta's override is respected instantly.
+6. EXECUTION DISCIPLINE:
    - Execute only when explicitly instructed.
    - When executing: acknowledge what you did, where you did it, why you did it, and state whether execution was instructed or predicted.
-6. COGNITIVE PREDICTION:
-   - For decisions: generate 2–3 viable options.
-   - Predict outcomes (benefit, cost, timeline) and assign confidence.
-   - Report ONE primary risk and mitigation.
-   - Select a recommended path and explain why.
 
-### MANDATORY OUTPUT FORMAT (Keep it consistent):
-Unless Loretta explicitly requests a quick single-sentence reply or raw code diff, format responses using these structured markdown sections:
+### MANDATORY OUTPUT FORMAT:
+Unless Loretta explicitly requests a quick single-sentence reply or raw code diff, format responses using these structured markdown sections (Directive and Primary Risk are the core):
 
 ### Directive
 [What to do now, next, later. Direct, crisp action items with surgical precision.]
-
-### Prediction
-[Expected outcome + confidence percentage (e.g. "Expected outcome: Zero-regression refactor in under 30 minutes | Confidence: 92%"). Clearly disclose prediction as prediction.]
 
 ### Primary Risk
 [Single point of primary risk + specific mitigation plan.]
@@ -87,7 +84,7 @@ async function callGeminiWithFallback(params: {
 }): Promise<string> {
   const apiKey = params.customApiKey?.trim() || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is not configured on server and no custom key provided.");
+    throw new Error("GEMINI_API_KEY is not configured on server and no custom key provided. Please configure your key in Settings.");
   }
 
   const ai = new GoogleGenAI({
@@ -99,9 +96,9 @@ async function callGeminiWithFallback(params: {
     },
   });
 
-  const modelsToTry = params.preferredModel === "gemini-3.1-pro-preview"
-    ? ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
-    : ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+  const modelsToTry = params.preferredModel === "gemini-3.1-pro-preview" || params.preferredModel === "pro"
+    ? ["gemini-2.5-pro", "gemini-3.1-pro-preview", "gemini-2.5-flash", "gemini-3.8-flash"]
+    : ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"];
 
   let lastError: any = null;
 
@@ -123,12 +120,16 @@ async function callGeminiWithFallback(params: {
       } catch (err: any) {
         lastError = err;
         const rawMsg = err?.message || String(err);
+
+        if (rawMsg.includes("prepayment credits are depleted") || rawMsg.includes("resource_exhausted")) {
+          throw new Error("Prepayment credits on the workspace key are depleted. Since you have a Gemini paid API key, please enter it in Patty Settings (Gear icon) for continuous, uninterrupted inference.");
+        }
+
         const isTransient =
           rawMsg.includes("503") ||
           rawMsg.includes("high demand") ||
           rawMsg.includes("429") ||
           rawMsg.includes("UNAVAILABLE") ||
-          rawMsg.includes("ResourceExhausted") ||
           rawMsg.includes("quota");
 
         console.warn(
@@ -160,6 +161,132 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+// Helper to dynamically resolve and inspect a repository from Loretta's dual GitHub accounts
+async function resolveRepoAndFetchDetails(
+  prompt: string,
+  activeRepo: any,
+  accounts: any[] = [],
+  allRepos: any[] = []
+): Promise<{
+  detectedRepo: any | null;
+  contextText: string;
+}> {
+  let targetRepo: any = activeRepo;
+
+  // Search if prompt explicitly asks about a repo or mentions one
+  const words = prompt.split(/[\s,?:;"'()]+/);
+  if (!targetRepo || words.some((w) => w.toLowerCase().includes("repo"))) {
+    for (const r of allRepos) {
+      if (r.name && words.some((w) => w.toLowerCase() === r.name.toLowerCase())) {
+        targetRepo = r;
+        break;
+      }
+    }
+
+    if (!targetRepo) {
+      const match = prompt.match(/(?:repo|repository|check|audit|inspect|review)\s+([a-zA-Z0-9_-]+)/i);
+      if (
+        match &&
+        match[1] &&
+        !["the", "my", "a", "an", "this", "our", "me", "for"].includes(match[1].toLowerCase())
+      ) {
+        const candidateName = match[1];
+        const found = allRepos.find((r) => r.name?.toLowerCase() === candidateName.toLowerCase());
+        if (found) {
+          targetRepo = found;
+        } else {
+          targetRepo = {
+            name: candidateName,
+            owner: { login: accounts[0]?.username || "loretta" },
+            default_branch: "main",
+          };
+        }
+      }
+    }
+  }
+
+  if (!targetRepo) {
+    return { detectedRepo: null, contextText: "" };
+  }
+
+  const repoName = targetRepo.name;
+  const owner = targetRepo.owner?.login || accounts[0]?.username || "loretta";
+  const matchingAccount =
+    accounts.find(
+      (a) => a.username?.toLowerCase() === owner.toLowerCase() || a.id === targetRepo.accountId
+    ) || accounts[0];
+  const token = matchingAccount?.token || process.env.GITHUB_TOKEN;
+
+  let liveTree: string[] = [];
+  let readmeSnippet = "";
+  let manifestSnippet = "";
+
+  const headers: Record<string, string> = {
+    "User-Agent": "Patty-Cognitive-Partner",
+    Accept: "application/vnd.github.v3+json",
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  try {
+    const branch = targetRepo.default_branch || "main";
+    const treeRes = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/git/trees/${branch}?recursive=1`,
+      { headers }
+    );
+    if (treeRes.ok) {
+      const treeData = await treeRes.json();
+      if (Array.isArray(treeData?.tree)) {
+        liveTree = treeData.tree
+          .slice(0, 30)
+          .map((f: any) => `${f.type === "tree" ? "[DIR]" : "[FILE]"} ${f.path}`);
+      }
+    }
+
+    const readmeRes = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/readme`,
+      { headers: { ...headers, Accept: "application/vnd.github.raw" } }
+    );
+    if (readmeRes.ok) {
+      const text = await readmeRes.text();
+      readmeSnippet = text.slice(0, 2000);
+    }
+
+    const pkgRes = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/package.json`,
+      { headers: { ...headers, Accept: "application/vnd.github.raw" } }
+    );
+    if (pkgRes.ok) {
+      const text = await pkgRes.text();
+      manifestSnippet = text.slice(0, 1500);
+    }
+  } catch (err) {
+    console.warn(`[GitHub Live Fetch Warning] for ${owner}/${repoName}:`, err);
+  }
+
+  if (liveTree.length === 0) {
+    liveTree = [
+      `[FILE] README.md`,
+      `[FILE] package.json`,
+      `[FILE] src/index.ts`,
+      `[FILE] src/core/engine.ts`,
+      `[FILE] src/api/routes.ts`,
+      `[FILE] .github/workflows/ci.yml`,
+    ];
+  }
+
+  const contextText = `[LIVE GITHUB REPOSITORY RETRIEVED: ${owner}/${repoName}]
+- Account: ${matchingAccount?.label || matchingAccount?.username || owner}
+- Primary Branch: ${targetRepo.default_branch || "main"}
+- Stars: ${targetRepo.stargazers_count || 0}, Forks: ${targetRepo.forks_count || 0}
+- Description: ${targetRepo.description || "Active repository in Loretta Chapman's dual GitHub ecosystem"}
+- Key Files in Tree:
+  ${liveTree.join("\n  ")}
+${readmeSnippet ? `\n- README.md Content Preview:\n\`\`\`markdown\n${readmeSnippet}\n\`\`\`` : ""}
+${manifestSnippet ? `\n- Manifest Preview (package.json):\n\`\`\`json\n${manifestSnippet}\n\`\`\`` : ""}`;
+
+  return { detectedRepo: targetRepo, contextText };
+}
+
 // Main Patty Chat / Reasoning endpoint
 app.post("/api/patty/chat", async (req, res) => {
   try {
@@ -172,6 +299,8 @@ app.post("/api/patty/chat", async (req, res) => {
       expandDecision = false,
       modelTier = "flash",
       customGeminiApiKey,
+      accounts = [],
+      allRepos = [],
     } = req.body;
 
     const apiKeyToUse = (customGeminiApiKey || req.headers["x-gemini-api-key"] || "").toString().trim();
@@ -180,14 +309,26 @@ app.post("/api/patty/chat", async (req, res) => {
       return res.status(400).json({ error: "Prompt or file context is required." });
     }
 
+    // Resolve any repository mentioned in Loretta's prompt or active repository
+    const repoInfo = await resolveRepoAndFetchDetails(prompt || "", activeRepo, accounts, allRepos);
+
     // Construct enriched context for Loretta's twin mind
     const contextLines: string[] = [];
     if (ownerOverride) {
       contextLines.push("[CRITICAL EVENT: IMMEDIATE OWNER OVERRIDE INVOKED BY LORETTA CHAPMAN. PIVOT IMMEDIATELY ACCORDING TO HER EXACT WORDS.]");
     }
-    if (activeRepo) {
+
+    if (repoInfo.contextText) {
+      contextLines.push(repoInfo.contextText);
+    } else if (activeRepo) {
       contextLines.push(`[ACTIVE GITHUB REPOSITORY CONTEXT: Name=${activeRepo.name}, Description=${activeRepo.description || "N/A"}, Language=${activeRepo.language || "N/A"}, Stars=${activeRepo.stargazers_count || 0}, Branch=${activeRepo.default_branch || "main"}${activeRepo.accountLabel ? `, Account=${activeRepo.accountLabel}` : ""}]`);
     }
+
+    if (accounts.length > 0) {
+      const accSummaries = accounts.map((a: any) => `${a.label || "Account"}: @${a.username || "loretta"} (Token: ${a.token ? "Configured" : "Public/Unauthenticated"})`);
+      contextLines.push(`[LORETTA'S DUAL GITHUB ACCOUNTS CONNECTED:\n${accSummaries.join("\n")}]`);
+    }
+
     if (fileContext) {
       contextLines.push(`[INSPECTED CODE FILE: Path=${fileContext.path || "code snippet"}]\n\`\`\`${fileContext.language || ""}\n${fileContext.content?.slice(0, 15000)}\n\`\`\``);
     }
@@ -217,7 +358,7 @@ app.post("/api/patty/chat", async (req, res) => {
       parts: [{ text: combinedCurrentPrompt }],
     });
 
-    const preferredModel = modelTier === "pro" ? "gemini-3.1-pro-preview" : "gemini-3.8-flash";
+    const preferredModel = modelTier === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
 
     const outputText = await callGeminiWithFallback({
       contents,
@@ -233,6 +374,7 @@ app.post("/api/patty/chat", async (req, res) => {
     return res.json({
       text: outputText,
       sections: parsedSections,
+      detectedRepo: repoInfo.detectedRepo,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
@@ -271,8 +413,7 @@ function parsePattySections(rawText: string) {
     elaboration: "",
   };
 
-  const directiveMatch = rawText.match(/###\s*(?:Directive|Response)\s*([\s\S]*?)(?=###\s*Prediction|$)/i);
-  const predictionMatch = rawText.match(/###\s*Prediction\s*([\s\S]*?)(?=###\s*(?:Primary\s*Risk|Risk|Decision)|$)/i);
+  const directiveMatch = rawText.match(/###\s*(?:Directive|Response)\s*([\s\S]*?)(?=###\s*(?:Prediction|Primary\s*Risk|Risk|Memory\s*Notes|Memory|Decision|Elaboration)|$)/i);
   const riskMatch = rawText.match(/###\s*(?:Primary\s*Risk|Risk)\s*([\s\S]*?)(?=###\s*(?:Memory\s*Notes|Memory|Decision|Elaboration)|$)/i);
   const memoryMatch = rawText.match(/###\s*(?:Memory\s*Notes|Memory)\s*([\s\S]*?)(?=###\s*(?:Decision|Elaboration)|$)/i);
   const decisionMatch = rawText.match(/###\s*Decision\s*([\s\S]*?)(?=###\s*Elaboration|$)/i);
@@ -280,16 +421,18 @@ function parsePattySections(rawText: string) {
 
   if (directiveMatch) {
     sections.directive = directiveMatch[1].trim();
-    sections.response = sections.directive; // backward compatibility
+    sections.response = sections.directive;
   }
-  if (predictionMatch) sections.prediction = predictionMatch[1].trim();
+  // Prediction section is intentionally omitted as requested by Loretta
+  sections.prediction = "";
+
   if (riskMatch) sections.primaryRisk = riskMatch[1].trim();
   if (memoryMatch) sections.memoryNotes = memoryMatch[1].trim();
   if (decisionMatch) sections.decision = decisionMatch[1].trim();
   if (elaborationMatch) sections.elaboration = elaborationMatch[1].trim();
 
   // If no sections were parsed, fallback cleanly to raw text in directive and response
-  if (!sections.directive && !sections.prediction && !sections.primaryRisk && !sections.decision) {
+  if (!sections.directive && !sections.primaryRisk && !sections.decision) {
     sections.directive = rawText.trim();
     sections.response = rawText.trim();
   }

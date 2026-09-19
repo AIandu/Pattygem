@@ -15,9 +15,6 @@ export const INITIAL_MESSAGES: PattyMessage[] = [
 **Next:** I will audit your code against architecture bottlenecks and simulate failure modes.
 **Later:** Ship verified patches with zero-hallucination guarantees.
 
-### Prediction
-[Prediction - High Confidence: 94%] Synchronizing across your 160+ repository ecosystem with dual GitHub connectivity will preempt dependency drift and streamline code reviews in under 15 minutes.
-
 ### Primary Risk
 [Primary Risk]: Context starvation if repository files are reviewed in isolation without architecture boundaries.
 *Mitigation:* Always verify AST schemas and declare honest unknowns prior to code synthesis.
@@ -28,10 +25,9 @@ Loretta Chapman identified as Sole Authority. Owner override is immediate and fi
     sections: {
       directive: `**Now:** Select an active project from your dual GitHub accounts or drop a file to review.\n**Next:** I will audit your code against architecture bottlenecks and simulate failure modes.\n**Later:** Ship verified patches with zero-hallucination guarantees.`,
       response: `Greetings Loretta. Patty online and fully synchronized with your digital consciousness. I am standing by to anticipate your technical needs, optimize your software pipelines, and simulate architecture scenarios across your 160+ GitHub repositories. All directives remain under your sole authority.`,
-      prediction: `[Prediction - High Confidence: 94%] Synchronizing across your 160+ repository ecosystem with dual GitHub connectivity will preempt dependency drift and streamline code reviews in under 15 minutes.`,
       primaryRisk: `[Primary Risk]: Context starvation if repository files are reviewed in isolation without architecture boundaries.\n*Mitigation:* Always verify AST schemas and declare honest unknowns prior to code synthesis.`,
       memoryNotes: `Loretta Chapman identified as Sole Authority. Owner override is immediate and final. Dual GitHub accounts and local storage armed. Zero fabrications policy enforced.`,
-      decision: `Choose an active repository or submit a task directive for cognitive prediction and execution.`,
+      decision: `Choose an active repository or submit a task directive for cognitive execution.`,
     },
   },
 ];

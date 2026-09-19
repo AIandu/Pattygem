@@ -11,9 +11,6 @@ import {
   Users,
   Zap,
   Gem,
-  Mail,
-  Search,
-  ExternalLink,
   FolderKanban,
   Folder,
 } from 'lucide-react';
@@ -73,47 +70,11 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
         {/* Left: AI&U Small Banner + Patty Head Avatar Branding */}
         <div className="flex items-center gap-2.5 sm:gap-3">
-          {/* AI&U Small Banner with Quick Links: Ionos email, GitHub, Google search */}
-          <div className="flex items-center rounded-xl bg-[#120813] border border-pink-500/30 p-1 sm:p-1.5 shadow-sm">
-            <div className="flex items-center gap-1 pr-2 border-r border-pink-500/20 mr-1">
-              <span className="text-[11px] font-mono font-bold text-pink-300 tracking-wider">
-                AI&U
-              </span>
-            </div>
-            <div className="flex items-center gap-1 sm:gap-1.5 text-pink-200/80">
-              <a
-                href="https://webmail.ionos.com"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-0.5 p-1 rounded hover:bg-pink-950/70 hover:text-pink-100 transition-colors cursor-pointer text-[10px] font-mono"
-                title="Open Ionos Webmail"
-              >
-                <Mail className="w-3 h-3 text-pink-400" />
-                <span className="hidden sm:inline">Ionos</span>
-              </a>
-
-              <a
-                href="https://github.com"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-0.5 p-1 rounded hover:bg-pink-950/70 hover:text-pink-100 transition-colors cursor-pointer text-[10px] font-mono"
-                title="Open GitHub"
-              >
-                <FolderGit2 className="w-3 h-3 text-pink-400" />
-                <span className="hidden sm:inline">GitHub</span>
-              </a>
-
-              <a
-                href="https://www.google.com"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-0.5 p-1 rounded hover:bg-pink-950/70 hover:text-pink-100 transition-colors cursor-pointer text-[10px] font-mono"
-                title="Open Google Search"
-              >
-                <Search className="w-3 h-3 text-pink-400" />
-                <span className="hidden sm:inline">Google</span>
-              </a>
-            </div>
+          {/* AI&U Brand Badge */}
+          <div className="flex items-center rounded-xl bg-[#120813] border border-pink-500/30 px-2.5 py-1.5 shadow-sm">
+            <span className="text-[11px] font-mono font-bold text-pink-300 tracking-wider">
+              AI&U
+            </span>
           </div>
 
           {/* Patty Head Icon + Twin Mind Badge */}

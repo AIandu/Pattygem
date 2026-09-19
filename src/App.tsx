@@ -58,6 +58,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isReposLoading, setIsReposLoading] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
 
   // Modals & Drawers state
   const [isRepoSelectorOpen, setIsRepoSelectorOpen] = useState(false);
@@ -204,6 +205,8 @@ export default function App() {
           expandDecision,
           customGeminiApiKey: preferences.customGeminiApiKey,
           modelTier: preferences.modelTier || 'flash',
+          accounts: preferences.accounts || [],
+          allRepos: repos || [],
         }),
       });
 
@@ -213,24 +216,21 @@ export default function App() {
         throw new Error(data.error || 'Server returned an error');
       }
 
+      // If Patty detected a repository from Loretta's prompt, automatically sync activeRepo
+      if (data.detectedRepo && (!activeRepo || activeRepo.name !== data.detectedRepo.name)) {
+        setActiveRepo(data.detectedRepo);
+      }
+
       const pattyMsg: PattyMessage = {
         id: `patty-${Date.now()}`,
         role: 'assistant',
         content: data.text,
         timestamp: data.timestamp || new Date().toISOString(),
         sections: data.sections,
-        repoRef: activeRepo?.name,
+        repoRef: (data.detectedRepo || activeRepo)?.name,
       };
 
       setMessages((prev) => [...prev, pattyMsg]);
-
-      // Update predictions tally
-      if (data.sections?.prediction) {
-        setGovernanceState((prev) => ({
-          ...prev,
-          labeledPredictionsCount: prev.labeledPredictionsCount + 1,
-        }));
-      }
 
       // Check if Patty should speak response
       if (preferences.autoSpeak && data.sections?.response) {
@@ -249,14 +249,13 @@ export default function App() {
       const errorMsg: PattyMessage = {
         id: `patty-err-${Date.now()}`,
         role: 'assistant',
-        content: `### Directive\nMaintain composure. Cognitive twin stream experienced temporary capacity pressure (${cleanErrorMessage}). Loretta remains the sole directing authority.\n\n### Prediction\n[Confidence: 95%] Transient demand rebalances shortly. Resending will synchronize the cognitive pipeline immediately.\n\n### Primary Risk\nDelaying prompt dispatch while model buffer clears.\n\n### Memory Notes\nPrompt indexed: "${promptText.slice(0, 45)}..."`,
+        content: `### Directive\nMaintain cognitive continuity. ${cleanErrorMessage.includes('prepayment') ? 'Your personal Gemini paid API key can be entered in Settings for dedicated quota.' : `Cognitive twin stream experienced temporary capacity pressure (${cleanErrorMessage}). Loretta remains the sole directing authority.`}\n\n### Primary Risk\nDelaying prompt dispatch while model buffer clears.\n\n### Memory Notes\nPrompt indexed: "${promptText.slice(0, 45)}..."`,
         timestamp: new Date().toISOString(),
         sections: {
-          directive: `Maintain composure. Cognitive twin stream experienced temporary capacity pressure (${cleanErrorMessage}). Loretta remains the sole directing authority.`,
-          prediction: `[Confidence: 95%] Transient demand rebalances shortly. Resending will synchronize the cognitive pipeline immediately.`,
+          directive: `Maintain cognitive continuity. ${cleanErrorMessage.includes('prepayment') ? 'Your personal Gemini paid API key can be entered in Settings (gear icon in header) for dedicated quota.' : `Cognitive stream experienced temporary capacity pressure (${cleanErrorMessage}). Loretta remains the sole directing authority.`}`,
           primaryRisk: `Delaying prompt dispatch while model buffer clears.`,
           memoryNotes: `Prompt indexed: "${promptText.slice(0, 45)}..."`,
-          elaboration: `Telemetry diagnostic: ${cleanErrorMessage}. Loretta's override or paid Gemini API key can bypass high-demand thresholds.`,
+          elaboration: `Telemetry diagnostic: ${cleanErrorMessage}. Loretta's override or personal paid Gemini API key configured in Settings guarantees dedicated capacity.`,
         },
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -446,15 +445,35 @@ export default function App() {
             </div>
           )}
 
-          {/* Render All Chat Messages */}
-          {messages.map((message) => (
-            <ChatMessage
-              key={message.id}
-              message={message}
-              onExpandDecision={handleExpandDecision}
-              onSpeak={speakText}
-            />
-          ))}
+          {/* Render All Chat Messages with older conversations faded in background */}
+          {messages.map((message, index) => {
+            const isRecent = index >= messages.length - 2;
+            const isFocal = isRecent || focusedMessageId === message.id;
+
+            return (
+              <div
+                key={message.id}
+                onClick={() => setFocusedMessageId(message.id)}
+                onTouchStart={() => setFocusedMessageId(message.id)}
+                onMouseEnter={() => {
+                  if (focusedMessageId !== message.id) {
+                    setFocusedMessageId(message.id);
+                  }
+                }}
+                className={`transition-all duration-300 ${
+                  isFocal
+                    ? 'opacity-100 filter-none scale-100'
+                    : 'opacity-25 hover:opacity-100 blur-[0.25px] hover:blur-none cursor-pointer'
+                }`}
+              >
+                <ChatMessage
+                  message={message}
+                  onExpandDecision={handleExpandDecision}
+                  onSpeak={speakText}
+                />
+              </div>
+            );
+          })}
 
           {/* Loading Indicator */}
           {isLoading && (
