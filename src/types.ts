@@ -44,6 +44,7 @@ export interface GitHubAccount {
   label: string;
   token?: string;
   isConfigured: boolean;
+  isSecretSourced?: boolean;
 }
 
 export interface GitHubRepo {
@@ -59,6 +60,7 @@ export interface GitHubRepo {
   open_issues_count?: number;
   accountId?: string;
   accountLabel?: string;
+  accountOwner?: string;
 }
 
 export interface GitTreeNode {
@@ -81,7 +83,8 @@ export interface UserPreferences {
   githubToken?: string;
   accounts: GitHubAccount[];
   githubAccounts?: GitHubAccount[];
-  activeAccountFilter: string; // 'all' | 'account_1' | 'account_2'
+  authenticatedTokens: string[]; // Managed list of authenticated tokens in UserPreferences
+  activeAccountFilter: string; // 'all' | accountId
   modelTier: 'flash' | 'pro';
   customGeminiApiKey?: string;
   autoSpeak: boolean;

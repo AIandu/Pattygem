@@ -114,48 +114,111 @@ export default function App() {
     saveTodos(todos);
   }, [todos]);
 
-  // Fetch GitHub repos whenever accounts configuration changes
+  // Auto-sync GitHub secrets into UserPreferences authenticatedTokens on load
+  useEffect(() => {
+    const checkSecrets = async () => {
+      try {
+        const res = await fetch('/api/github/secrets-status');
+        const data = await res.json();
+        if (data.tokens && Array.isArray(data.tokens) && data.tokens.length > 0) {
+          const secretTokens: string[] = data.tokens;
+          setPreferences((prev) => {
+            const currentTokens = new Set(prev.authenticatedTokens || []);
+            let changed = false;
+            secretTokens.forEach((t) => {
+              if (!currentTokens.has(t)) {
+                currentTokens.add(t);
+                changed = true;
+              }
+            });
+
+            // If accounts are missing tokens, attach secret tokens
+            const currentAccounts = prev.accounts || [];
+            const updatedAccounts = currentAccounts.map((acc, idx) => {
+              if (!acc.token && secretTokens[idx]) {
+                changed = true;
+                return { ...acc, token: secretTokens[idx], isSecretSourced: true };
+              }
+              return acc;
+            });
+
+            if (changed) {
+              const newPrefs = {
+                ...prev,
+                authenticatedTokens: Array.from(currentTokens),
+                accounts: updatedAccounts,
+              };
+              savePreferences(newPrefs);
+              return newPrefs;
+            }
+            return prev;
+          });
+        }
+      } catch (e) {
+        console.warn('Could not query secrets status:', e);
+      }
+    };
+    checkSecrets();
+  }, []);
+
+  // Fetch GitHub repos whenever accounts configuration or authenticatedTokens change
   useEffect(() => {
     fetchRepos();
-  }, [preferences.githubAccounts, preferences.githubUsername]);
+  }, [preferences.accounts, preferences.authenticatedTokens, preferences.githubUsername]);
 
   const fetchRepos = async () => {
     setIsReposLoading(true);
     try {
-      const accountsToQuery = preferences.githubAccounts && preferences.githubAccounts.length > 0
-        ? preferences.githubAccounts
-        : [{ id: '1', username: preferences.githubUsername || 'loretta', token: preferences.githubToken || '' }];
+      const accountsToQuery = preferences.accounts && preferences.accounts.length > 0
+        ? preferences.accounts
+        : [{ id: 'account_1', label: 'Primary', username: preferences.githubUsername || 'loretta', token: preferences.githubToken || '' }];
 
-      let allRepos: GitHubRepo[] = [];
+      const res = await fetch('/api/github/multi-repos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accounts: accountsToQuery,
+          authenticatedTokens: preferences.authenticatedTokens || [],
+        }),
+      });
 
-      for (const account of accountsToQuery) {
-        if (!account.username?.trim()) continue;
-        const headers: Record<string, string> = {};
-        if (account.token) {
-          headers['x-github-token'] = account.token;
+      const data = await res.json();
+      if (data.repos && Array.isArray(data.repos)) {
+        setRepos(data.repos);
+        if (!activeRepo && data.repos.length > 0) {
+          setActiveRepo(data.repos[0]);
         }
-        try {
-          const res = await fetch(
-            `/api/github/repos?username=${encodeURIComponent(account.username.trim())}`,
-            { headers }
-          );
-          const data = await res.json();
-          if (data.repos && Array.isArray(data.repos)) {
-            const tagged = data.repos.map((r: GitHubRepo) => ({
-              ...r,
-              accountOwner: account.username,
-              accountId: account.id,
-            }));
-            allRepos = [...allRepos, ...tagged];
+      } else {
+        // Fallback to individual account queries if needed
+        let allRepos: GitHubRepo[] = [];
+        for (const account of accountsToQuery) {
+          if (!account.username?.trim()) continue;
+          const headers: Record<string, string> = {};
+          if (account.token) {
+            headers['x-github-token'] = account.token;
           }
-        } catch (err) {
-          console.warn(`Could not fetch repos for ${account.username}:`, err);
+          try {
+            const rRes = await fetch(
+              `/api/github/repos?username=${encodeURIComponent(account.username.trim())}`,
+              { headers }
+            );
+            const rData = await rRes.json();
+            if (rData.repos && Array.isArray(rData.repos)) {
+              const tagged = rData.repos.map((r: GitHubRepo) => ({
+                ...r,
+                accountOwner: account.username,
+                accountId: account.id,
+              }));
+              allRepos = [...allRepos, ...tagged];
+            }
+          } catch (err) {
+            console.warn(`Could not fetch repos for ${account.username}:`, err);
+          }
         }
-      }
-
-      setRepos(allRepos);
-      if (!activeRepo && allRepos.length > 0) {
-        setActiveRepo(allRepos[0]);
+        setRepos(allRepos);
+        if (!activeRepo && allRepos.length > 0) {
+          setActiveRepo(allRepos[0]);
+        }
       }
     } catch (e) {
       console.error('Failed to fetch repositories', e);
@@ -206,14 +269,20 @@ export default function App() {
           customGeminiApiKey: preferences.customGeminiApiKey,
           modelTier: preferences.modelTier || 'flash',
           accounts: preferences.accounts || [],
+          authenticatedTokens: preferences.authenticatedTokens || [],
           allRepos: repos || [],
         }),
       });
 
-      const data = await res.json();
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch (_jsonErr) {
+        data = { error: `Server response error (${res.status} ${res.statusText})` };
+      }
 
       if (!res.ok) {
-        throw new Error(data.error || 'Server returned an error');
+        throw new Error(data?.error || `Server responded with status ${res.status}`);
       }
 
       // If Patty detected a repository from Loretta's prompt, automatically sync activeRepo
@@ -238,7 +307,10 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Failed to get response from Patty:', err);
-      let cleanErrorMessage = err.message || 'Capacity spike on model';
+      let cleanErrorMessage = err?.message || 'Cognitive pipeline synchronization';
+      if (cleanErrorMessage.includes('Failed to fetch') || cleanErrorMessage.includes('NetworkError')) {
+        cleanErrorMessage = 'Local dev server or network reconnecting';
+      }
       try {
         const parsed = JSON.parse(cleanErrorMessage);
         if (parsed?.error?.message) {
@@ -252,10 +324,10 @@ export default function App() {
         content: `### Directive\nMaintain cognitive continuity. ${cleanErrorMessage.includes('prepayment') ? 'Your personal Gemini paid API key can be entered in Settings for dedicated quota.' : `Cognitive twin stream experienced temporary capacity pressure (${cleanErrorMessage}). Loretta remains the sole directing authority.`}\n\n### Primary Risk\nDelaying prompt dispatch while model buffer clears.\n\n### Memory Notes\nPrompt indexed: "${promptText.slice(0, 45)}..."`,
         timestamp: new Date().toISOString(),
         sections: {
-          directive: `Maintain cognitive continuity. ${cleanErrorMessage.includes('prepayment') ? 'Your personal Gemini paid API key can be entered in Settings (gear icon in header) for dedicated quota.' : `Cognitive stream experienced temporary capacity pressure (${cleanErrorMessage}). Loretta remains the sole directing authority.`}`,
+          directive: `Maintain cognitive continuity. ${cleanErrorMessage.includes('prepayment') ? 'Your personal Gemini paid API key can be entered in Settings (gear icon in header) for dedicated quota.' : `Cognitive stream re-synchronized (${cleanErrorMessage}). Loretta remains the sole directing authority.`}`,
           primaryRisk: `Delaying prompt dispatch while model buffer clears.`,
           memoryNotes: `Prompt indexed: "${promptText.slice(0, 45)}..."`,
-          elaboration: `Telemetry diagnostic: ${cleanErrorMessage}. Loretta's override or personal paid Gemini API key configured in Settings guarantees dedicated capacity.`,
+          elaboration: `Telemetry diagnostic: ${cleanErrorMessage}. Dual GitHub accounts and repositories remain active. If needed, configure your personal Gemini paid API key in Settings.`,
         },
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -355,7 +427,7 @@ export default function App() {
         activeRepo={activeRepo}
         repoCount={repos.length}
         governanceState={governanceState}
-        accounts={preferences.githubAccounts || []}
+        accounts={preferences.accounts || []}
         activeAccountFilter={activeAccountFilter}
         onSelectAccountFilter={setActiveAccountFilter}
         modelTier={preferences.modelTier || 'flash'}
@@ -583,10 +655,16 @@ export default function App() {
       <RepoSelectorModal
         isOpen={isRepoSelectorOpen}
         onClose={() => setIsRepoSelectorOpen(false)}
-        repos={filteredRepos}
+        repos={repos}
         activeRepo={activeRepo}
         onSelectRepo={(r) => setActiveRepo(r)}
         onActionOnRepo={handleActionOnRepo}
+        accounts={preferences.accounts || []}
+        activeAccountFilter={activeAccountFilter}
+        onSelectAccountFilter={setActiveAccountFilter}
+        onSaveAccounts={(updatedAccounts) => {
+          setPreferences((prev) => ({ ...prev, accounts: updatedAccounts }));
+        }}
         githubUsername={preferences.githubUsername}
         githubToken={preferences.githubToken || ''}
         onUpdateGithubConfig={(u, t) => {

@@ -1,4 +1,4 @@
-import { PattyMessage, UserPreferences, GovernanceState, UploadFileItem, TodoProjectItem } from '../types';
+import { PattyMessage, UserPreferences, GovernanceState, UploadFileItem, TodoProjectItem, GitHubAccount } from '../types';
 
 const CHAT_STORAGE_KEY = 'patty_loretta_chat_history_v1';
 const PREFS_STORAGE_KEY = 'patty_loretta_preferences_v1';
@@ -137,9 +137,10 @@ const DEFAULT_PREFERENCES: UserPreferences = {
       username: 'loretta-labs',
       label: 'Secondary / OSS GitHub',
       token: '',
-      isConfigured: false,
+      isConfigured: true,
     },
   ],
+  authenticatedTokens: [],
   activeAccountFilter: 'all',
   modelTier: 'flash',
   autoSpeak: false,
@@ -154,10 +155,8 @@ export function loadPreferences(): UserPreferences {
       return DEFAULT_PREFERENCES;
     }
     const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_PREFERENCES,
-      ...parsed,
-      accounts: parsed.accounts && parsed.accounts.length >= 2
+    const accounts: GitHubAccount[] =
+      Array.isArray(parsed.accounts) && parsed.accounts.length >= 1
         ? parsed.accounts
         : [
             {
@@ -172,9 +171,30 @@ export function loadPreferences(): UserPreferences {
               username: 'loretta-labs',
               label: 'Secondary / OSS GitHub',
               token: '',
-              isConfigured: false,
+              isConfigured: true,
             },
-          ],
+          ];
+
+    // Collect all tokens from accounts or parsed authenticatedTokens
+    const tokenSet = new Set<string>();
+    if (Array.isArray(parsed.authenticatedTokens)) {
+      parsed.authenticatedTokens.forEach((t: string) => {
+        if (t && typeof t === 'string' && t.trim()) tokenSet.add(t.trim());
+      });
+    }
+    accounts.forEach((acc) => {
+      if (acc.token && typeof acc.token === 'string' && acc.token.trim()) {
+        tokenSet.add(acc.token.trim());
+      }
+    });
+
+    const authenticatedTokens = Array.from(tokenSet);
+
+    return {
+      ...DEFAULT_PREFERENCES,
+      ...parsed,
+      accounts,
+      authenticatedTokens,
     };
   } catch (e) {
     return DEFAULT_PREFERENCES;
