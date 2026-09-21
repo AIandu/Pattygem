@@ -64,9 +64,6 @@ Unless Loretta explicitly requests a quick single-sentence reply or raw code dif
 ### Directive
 [What to do now, next, later. Direct, crisp action items with surgical precision.]
 
-### Primary Risk
-[Single point of primary risk + specific mitigation plan.]
-
 ### Memory Notes
 [Any updates to projects, rules, or honest unknowns clearly stated. If no unknowns, state "Known context verified; zero fabrications."]
 
@@ -264,25 +261,38 @@ async function resolveRepoAndFetchDetails(
   }
 
   if (liveTree.length === 0) {
-    liveTree = [
-      `[FILE] README.md`,
-      `[FILE] package.json`,
-      `[FILE] src/index.ts`,
-      `[FILE] src/core/engine.ts`,
-      `[FILE] src/api/routes.ts`,
-      `[FILE] .github/workflows/ci.yml`,
-    ];
-  }
+  console.warn(
+    `[GitHub Verification] No verified repository tree retrieved for ${owner}/${repoName}`
+  );
+}
 
-  const contextText = `[LIVE GITHUB REPOSITORY RETRIEVED: ${owner}/${repoName}]
+  const repositoryVerified = liveTree.length > 0;
+
+const contextText = repositoryVerified
+  ? `[VERIFIED GITHUB REPOSITORY: ${owner}/${repoName}]
+- Retrieval Status: VERIFIED
 - Account: ${matchingAccount?.label || matchingAccount?.username || owner}
 - Primary Branch: ${targetRepo.default_branch || "main"}
-- Stars: ${targetRepo.stargazers_count || 0}, Forks: ${targetRepo.forks_count || 0}
-- Description: ${targetRepo.description || "Active repository in Loretta Chapman's dual GitHub ecosystem"}
-- Key Files in Tree:
+- Stars: ${targetRepo.stargazers_count || 0}
+- Forks: ${targetRepo.forks_count || 0}
+- Description: ${targetRepo.description || "No description provided"}
+- Verified Files in Retrieved Tree:
   ${liveTree.join("\n  ")}
-${readmeSnippet ? `\n- README.md Content Preview:\n\`\`\`markdown\n${readmeSnippet}\n\`\`\`` : ""}
-${manifestSnippet ? `\n- Manifest Preview (package.json):\n\`\`\`json\n${manifestSnippet}\n\`\`\`` : ""}`;
+${readmeSnippet ? `\n- VERIFIED README.md Content Preview:\n\`\`\`markdown\n${readmeSnippet}\n\`\`\`` : ""}
+${manifestSnippet ? `\n- VERIFIED package.json Content Preview:\n\`\`\`json\n${manifestSnippet}\n\`\`\`` : ""}
+
+IMPORTANT EVIDENCE BOUNDARY:
+Only the information explicitly contained above was retrieved from GitHub.
+A filename appearing in the tree proves only that the file exists.
+It does NOT mean its contents were retrieved or inspected.
+Never quote, reconstruct, summarize, or cite source code that is not explicitly present in this context.
+Never invent line numbers.`
+  : `[GITHUB REPOSITORY RETRIEVAL FAILED OR RETURNED NO VERIFIED TREE: ${owner}/${repoName}]
+- Retrieval Status: UNVERIFIED
+- No repository file tree has been verified.
+- No source-code contents may be inferred.
+- Do not invent filenames, code, functions, dependencies, vulnerabilities, or line numbers.
+- Report repository-specific claims as [Unknown] until actual repository evidence is retrieved.`;
 
   return { detectedRepo: targetRepo, contextText };
 }
@@ -481,22 +491,16 @@ app.post("/api/github/multi-repos", async (req, res) => {
           }));
           allRepos = allRepos.concat(labeledData);
         } else {
-          // Curated ecosystem fallback labeled with this account
-          const mockRepos = generateLorettaEcosystem(username).map((r) => ({
-            ...r,
-            accountId: acc.id,
-            accountLabel: acc.label || username,
-          }));
-          allRepos = allRepos.concat(mockRepos);
-        }
+  console.warn(
+    `[GitHub Verification] GitHub API request failed for @${username}: ${ghRes.status} ${ghRes.statusText}`
+  );
+}
       } catch (err) {
-        const mockRepos = generateLorettaEcosystem(username).map((r) => ({
-          ...r,
-          accountId: acc.id,
-          accountLabel: acc.label || username,
-        }));
-        allRepos = allRepos.concat(mockRepos);
-      }
+  console.warn(
+    `[GitHub Verification] Failed to retrieve repositories for @${username}:`,
+    err
+  );
+}
     }
 
     // Deduplicate by repo name and sort by updated_at
@@ -787,7 +791,7 @@ npm run dev
 
   return `// ${filePath}
 // Author: Loretta
-// Managed & Audited by Patty Cognitive Twin Mind
+// Managed & Audited by Patty
 
 export interface EngineConfig {
   workerThreads: number;
