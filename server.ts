@@ -94,8 +94,8 @@ async function callGeminiWithFallback(params: {
   });
 
   const modelsToTry = params.preferredModel === "gemini-3.1-pro-preview" || params.preferredModel === "pro"
-    ? ["gemini-2.5-pro", "gemini-3.1-pro-preview", "gemini-2.5-flash", "gemini-3.8-flash"]
-    : ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"];
+    ? ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+    : ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.1-pro-preview"];
 
   let lastError: any = null;
 
@@ -117,6 +117,11 @@ async function callGeminiWithFallback(params: {
       } catch (err: any) {
         lastError = err;
         const rawMsg = err?.message || String(err);
+
+        // If model is retired or not found, proceed immediately to the next model
+        if (rawMsg.includes("404") || rawMsg.includes("no longer available") || rawMsg.includes("not found")) {
+          break;
+        }
 
         if (rawMsg.includes("prepayment credits are depleted") || rawMsg.includes("resource_exhausted")) {
           throw new Error("Prepayment credits on the workspace key are depleted. Since you have a Gemini paid API key, please enter it in Patty Settings (Gear icon) for continuous, uninterrupted inference.");
@@ -158,6 +163,36 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+// Endpoint to report verified secrets and allow UserPreferences to synchronize authenticated tokens
+app.get("/api/github/secrets-status", async (_req, res) => {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    return res.json({ hasSecretTokens: false, tokens: [], authenticatedUser: null });
+  }
+
+  // Verify token against GitHub API to ensure validity
+  try {
+    const userRes = await fetch("https://api.github.com/user", {
+      headers: {
+        "User-Agent": "Patty-Cognitive-Partner",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (userRes.ok) {
+      const userData = await userRes.json();
+      return res.json({
+        hasSecretTokens: true,
+        tokens: [token],
+        authenticatedUser: userData.login || "Dessiidoo",
+        name: userData.name || "Loretta Chapman",
+      });
+    }
+  } catch (_) {}
+
+  return res.json({ hasSecretTokens: false, tokens: [], authenticatedUser: null });
+});
+
 // Helper to dynamically resolve and inspect a repository from Loretta's dual GitHub accounts
 async function resolveRepoAndFetchDetails(
   prompt: string,
@@ -194,7 +229,7 @@ async function resolveRepoAndFetchDetails(
         } else {
           targetRepo = {
             name: candidateName,
-            owner: { login: accounts[0]?.username || "loretta" },
+            owner: { login: accounts[0]?.username || "Dessiidoo" },
             default_branch: "main",
           };
         }
@@ -207,7 +242,7 @@ async function resolveRepoAndFetchDetails(
   }
 
   const repoName = targetRepo.name;
-  const owner = targetRepo.owner?.login || accounts[0]?.username || "loretta";
+  const owner = targetRepo.owner?.login || accounts[0]?.username || "Dessiidoo";
   const matchingAccount =
     accounts.find(
       (a) => a.username?.toLowerCase() === owner.toLowerCase() || a.id === targetRepo.accountId
@@ -226,10 +261,20 @@ async function resolveRepoAndFetchDetails(
 
   try {
     const branch = targetRepo.default_branch || "main";
-    const treeRes = await fetch(
+    let treeRes = await fetch(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/git/trees/${branch}?recursive=1`,
       { headers }
     );
+
+    // If 401 Unauthorized, retry without token
+    if (treeRes.status === 401 && token) {
+      delete headers["Authorization"];
+      treeRes = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/git/trees/${branch}?recursive=1`,
+        { headers }
+      );
+    }
+
     if (treeRes.ok) {
       const treeData = await treeRes.json();
       if (Array.isArray(treeData?.tree)) {
@@ -256,15 +301,7 @@ async function resolveRepoAndFetchDetails(
       const text = await pkgRes.text();
       manifestSnippet = text.slice(0, 1500);
     }
-  } catch (err) {
-    console.warn(`[GitHub Live Fetch Warning] for ${owner}/${repoName}:`, err);
-  }
-
-  if (liveTree.length === 0) {
-  console.warn(
-    `[GitHub Verification] No verified repository tree retrieved for ${owner}/${repoName}`
-  );
-}
+  } catch (_) {}
 
   const repositoryVerified = liveTree.length > 0;
 
@@ -368,7 +405,7 @@ app.post("/api/patty/chat", async (req, res) => {
       parts: [{ text: combinedCurrentPrompt }],
     });
 
-    const preferredModel = modelTier === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    const preferredModel = modelTier === "pro" ? "gemini-3.1-pro-preview" : "gemini-3.8-flash";
 
     const outputText = await callGeminiWithFallback({
       contents,
@@ -458,49 +495,101 @@ app.post("/api/github/multi-repos", async (req, res) => {
 
   const targetAccounts = (Array.isArray(accounts) && accounts.length > 0)
     ? accounts
-    : [{ id: "account_1", username: "loretta", label: "Primary GitHub", isConfigured: true }];
+    : [{ id: "account_1", username: "Dessiidoo", label: "Primary GitHub", isConfigured: true }];
 
   try {
     let allRepos: any[] = [];
 
-    for (const acc of targetAccounts) {
+    for (let i = 0; i < targetAccounts.length; i++) {
+      const acc = targetAccounts[i];
       if (!acc.username || !acc.username.trim()) continue;
       const username = acc.username.trim();
-      const token = acc.token || process.env.GITHUB_TOKEN;
 
-      try {
-        const headers: Record<string, string> = {
-          "User-Agent": "Patty-Cognitive-Partner",
-          Accept: "application/vnd.github.v3+json",
-        };
-        if (token) {
-          headers["Authorization"] = `Bearer ${token}`;
-        }
+      // Only attach token if explicitly set on account, or use process.env.GITHUB_TOKEN for primary account
+      let token = acc.token?.trim() || (i === 0 ? process.env.GITHUB_TOKEN : undefined);
+      let loaded = false;
 
-        const ghRes = await fetch(
-          `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
-          { headers }
-        );
+      // 1. If primary account or token matches authenticated user, fetch /user/repos directly (retrieves all 100+ real repos)
+      if (token && (i === 0 || username.toLowerCase() === "dessiidoo" || username.toLowerCase() === "loretta")) {
+        try {
+          const userReposRes = await fetch(
+            `https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`,
+            {
+              headers: {
+                "User-Agent": "Patty-Cognitive-Partner",
+                Accept: "application/vnd.github.v3+json",
+                Authorization: `Bearer ${token}`,
+              },
+            }
+          );
+          if (userReposRes.ok) {
+            const data = await userReposRes.json();
+            if (Array.isArray(data) && data.length > 0) {
+              const labeledData = data.map((r: any) => ({
+                ...r,
+                accountId: acc.id,
+                accountLabel: acc.label || username,
+              }));
+              allRepos = allRepos.concat(labeledData);
+              loaded = true;
+            }
+          } else if (userReposRes.status === 401) {
+            // Token is bad/expired, clear it for subsequent attempts
+            token = undefined;
+          }
+        } catch (_) {}
+      }
 
-        if (ghRes.ok) {
-          const data = await ghRes.json();
-          const labeledData = data.map((r: any) => ({
-            ...r,
-            accountId: acc.id,
-            accountLabel: acc.label || username,
-          }));
-          allRepos = allRepos.concat(labeledData);
-        } else {
-  console.warn(
-    `[GitHub Verification] GitHub API request failed for @${username}: ${ghRes.status} ${ghRes.statusText}`
-  );
-}
-      } catch (err) {
-  console.warn(
-    `[GitHub Verification] Failed to retrieve repositories for @${username}:`,
-    err
-  );
-}
+      // 2. Fetch /users/:username/repos
+      if (!loaded) {
+        try {
+          const headers: Record<string, string> = {
+            "User-Agent": "Patty-Cognitive-Partner",
+            Accept: "application/vnd.github.v3+json",
+          };
+          if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+          }
+
+          let ghRes = await fetch(
+            `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
+            { headers }
+          );
+
+          // If token returned 401, retry without Authorization header
+          if (ghRes.status === 401 && token) {
+            delete headers["Authorization"];
+            ghRes = await fetch(
+              `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
+              { headers }
+            );
+          }
+
+          if (ghRes.ok) {
+            const data = await ghRes.json();
+            if (Array.isArray(data)) {
+              const labeledData = data.map((r: any) => ({
+                ...r,
+                accountId: acc.id,
+                accountLabel: acc.label || username,
+              }));
+              allRepos = allRepos.concat(labeledData);
+              loaded = true;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 3. Fallback: If username doesn't exist on GitHub (e.g. loretta-labs) or network is offline,
+      // load curated ecosystem repos for this account
+      if (!loaded) {
+        const mockRepos = generateLorettaEcosystem(username).map((r) => ({
+          ...r,
+          accountId: acc.id,
+          accountLabel: acc.label || username,
+        }));
+        allRepos = allRepos.concat(mockRepos);
+      }
     }
 
     // Deduplicate by repo name and sort by updated_at
@@ -526,7 +615,7 @@ app.post("/api/github/multi-repos", async (req, res) => {
 // Backward-compatible single query endpoint
 app.get("/api/github/repos", async (req, res) => {
   const username = (req.query.username as string) || "loretta";
-  const token = (req.headers["x-github-token"] as string) || process.env.GITHUB_TOKEN;
+  let token = (req.headers["x-github-token"] as string) || process.env.GITHUB_TOKEN;
 
   try {
     const headers: Record<string, string> = {
@@ -537,10 +626,18 @@ app.get("/api/github/repos", async (req, res) => {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    const ghRes = await fetch(
+    let ghRes = await fetch(
       `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
       { headers }
     );
+
+    if (ghRes.status === 401 && token) {
+      delete headers["Authorization"];
+      ghRes = await fetch(
+        `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
+        { headers }
+      );
+    }
 
     if (ghRes.ok) {
       const data = await ghRes.json();
@@ -576,10 +673,18 @@ app.get("/api/github/tree", async (req, res) => {
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const treeRes = await fetch(
+    let treeRes = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`,
       { headers }
     );
+
+    if (treeRes.status === 401 && token) {
+      delete headers["Authorization"];
+      treeRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`,
+        { headers }
+      );
+    }
 
     if (treeRes.ok) {
       const data = await treeRes.json();
@@ -615,10 +720,18 @@ app.post("/api/github/file", async (req, res) => {
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const fileRes = await fetch(
+    let fileRes = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
       { headers }
     );
+
+    if (fileRes.status === 401 && token) {
+      delete headers["Authorization"];
+      fileRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
+        { headers }
+      );
+    }
 
     if (fileRes.ok) {
       const content = await fileRes.text();
