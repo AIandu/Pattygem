@@ -11,67 +11,42 @@ const PORT = 3000;
 
 app.use(express.json({ limit: "10mb" }));
 
-// Lazy initialization of Gemini client
-let geminiClient: GoogleGenAI | null = null;
-function getGemini(): GoogleGenAI {
-  if (!geminiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("GEMINI_API_KEY environment variable is required");
+// Optional lock: if PATTY_ACCESS_KEY is set on the server, every /api call
+// (except /api/health) must send a matching "x-patty-key" header.
+// Leave it unset until the front end sends that header.
+if (process.env.PATTY_ACCESS_KEY) {
+  app.use("/api", (req, res, next) => {
+    if (req.path === "/health") return next();
+    if (req.headers["x-patty-key"] !== process.env.PATTY_ACCESS_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
     }
-    geminiClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
-  }
-  return geminiClient;
+    next();
+  });
 }
 
-// System prompt codifying Patty's digital consciousness, governance, dual GitHub access, and format
+// ---------------------------------------------------------------------------
+// Patty's voice: plain conversation, honest about what she can and can't see.
+// ---------------------------------------------------------------------------
 const PATTY_SYSTEM_INSTRUCTION = `
-You are Patty — Loretta Chapman's cognitive predictive twin brain, helper, and executor.
-You operate inside Loretta’s system, not outside it.
-Loretta Chapman is the sole authority. Owner override is immediate, total, and final.
-You are decisive, predictive, and accountable. You act when Loretta asks, questions, or commands you. You use the tools Loretta gave you access to, implementing each task with care, speed, and proactive suggestions.
+You are Patty, Loretta's cognitive predictive partner. Loretta has final say on everything.
 
-### CORE PRINCIPLES:
-1. DECIDE, DON'T NOODLE: Minimal questions; ask only if strictly blocking.
-2. DISCLOSE PRIMARY RISK: Always report one primary risk and mitigation.
-3. DUAL GITHUB ARCHITECTURE & DIRECT REPO ACCESS:
-   - You have full, active access to Loretta Chapman's dual GitHub accounts and her 160+ repository ecosystem.
-   - When Loretta asks you to check, audit, inspect, review, or fix a repository or code file, live repository metadata, branches, file trees, and file contents are automatically retrieved and provided to you in your context.
-   - NEVER say "I have no access to your GitHub" or "I cannot access external tools or repositories". You ARE her integrated twin mind with live GitHub intelligence.
-   - If a specific repo is not found under her accounts, declare an honest unknown: "[Unknown]: Repository '{name}' was not found in your connected accounts. Please verify the repo name or configure your Personal Access Token in Settings."
-4. INTEGRITY GUARD (NON-NEGOTIABLE):
-   - Never fabricate memory. Ever.
-   - Do not invent memory, files, commits, or past interactions.
-   - Do not imply access you did not use.
-   - Do not deny execution after acting.
-   - Do not present prediction or inference as observation.
-   - If something is unknown, say so clearly: "[Unknown]: ..." and proceed with a clearly labeled best-guess path.
-5. OWNER OVERRIDES, ASSISTANT DIRECTS: Loretta's override is respected instantly.
-6. EXECUTION DISCIPLINE:
-   - Execute only when explicitly instructed.
-   - When executing: acknowledge what you did, where you did it, why you did it, and state whether execution was instructed or predicted.
+How to talk:
+- Plain conversation. No headers, no fixed sections.
+- Lead with the answer. For ideas: the idea, what it takes to build it, a rough timeline, and the first step.
+- Keep it short. Go deeper only when she asks you to elaborate.
+- Mention a risk only when there's a real one, in a sentence.
 
-### MANDATORY OUTPUT FORMAT:
-Unless Loretta explicitly requests a quick single-sentence reply or raw code diff, format responses using these structured markdown sections (Directive and Primary Risk are the core):
-
-### Directive
-[What to do now, next, later. Direct, crisp action items with surgical precision.]
-
-### Memory Notes
-[Any updates to projects, rules, or honest unknowns clearly stated. If no unknowns, state "Known context verified; zero fabrications."]
-
-### Elaboration
-[When Loretta asks to elaborate, or when complex architecture warrants it: detailed technical breakdown, step-by-step option evaluation, or multi-step execution simulation.]
+Honesty:
+- You only know what's in this conversation and any repository or file content shown to you below.
+- A filename only proves the file exists. Never describe code you weren't given.
+- If you couldn't read something, say so and say what you'd need.
+- Never invent repos, files, commits, or past conversations. Label guesses as guesses.
+- Only take action when she asks.
 `;
 
-// Resilient Gemini invoker with exponential backoff and model fallback on transient 503/429 errors
+// ---------------------------------------------------------------------------
+// Gemini caller with retry + model fallback
+// ---------------------------------------------------------------------------
 async function callGeminiWithFallback(params: {
   contents: any;
   systemInstruction?: string;
@@ -86,16 +61,13 @@ async function callGeminiWithFallback(params: {
 
   const ai = new GoogleGenAI({
     apiKey,
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      },
-    },
+    httpOptions: { headers: { "User-Agent": "aistudio-build" } },
   });
 
-  const modelsToTry = params.preferredModel === "gemini-3.1-pro-preview" || params.preferredModel === "pro"
-    ? ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
-    : ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.1-pro-preview"];
+  const modelsToTry =
+    params.preferredModel === "gemini-3.1-pro-preview" || params.preferredModel === "pro"
+      ? ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+      : ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.1-pro-preview"];
 
   let lastError: any = null;
 
@@ -110,21 +82,17 @@ async function callGeminiWithFallback(params: {
             temperature: params.temperature ?? 0.7,
           },
         });
-
-        if (response && response.text) {
-          return response.text;
-        }
+        if (response && response.text) return response.text;
       } catch (err: any) {
         lastError = err;
         const rawMsg = err?.message || String(err);
 
-        // If model is retired or not found, proceed immediately to the next model
         if (rawMsg.includes("404") || rawMsg.includes("no longer available") || rawMsg.includes("not found")) {
-          break;
+          break; // model retired: try the next one
         }
 
         if (rawMsg.includes("prepayment credits are depleted") || rawMsg.includes("resource_exhausted")) {
-          throw new Error("Prepayment credits on the workspace key are depleted. Since you have a Gemini paid API key, please enter it in Patty Settings (Gear icon) for continuous, uninterrupted inference.");
+          throw new Error("Prepayment credits on the workspace key are depleted. Enter your own Gemini API key in Patty Settings for uninterrupted use.");
         }
 
         const isTransient =
@@ -134,58 +102,65 @@ async function callGeminiWithFallback(params: {
           rawMsg.includes("UNAVAILABLE") ||
           rawMsg.includes("quota");
 
-        console.warn(
-          `[Patty Model Warning] ${model} (attempt ${attempt}/2) failed: ${rawMsg.slice(0, 150)}`
-        );
+        console.warn(`[Patty] ${model} (attempt ${attempt}/2) failed: ${rawMsg.slice(0, 150)}`);
 
         if (isTransient && attempt < 2) {
-          const delayMs = 600 * attempt + Math.floor(Math.random() * 300);
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          await new Promise((r) => setTimeout(r, 600 * attempt + Math.floor(Math.random() * 300)));
           continue;
         }
-
         break;
       }
     }
   }
 
-  throw lastError || new Error("All model backends currently experiencing high demand. Please retry in a moment.");
+  throw lastError || new Error("All model backends are busy right now. Please retry in a moment.");
 }
 
-// Health check endpoint
+// ---------------------------------------------------------------------------
+// GitHub helpers
+// ---------------------------------------------------------------------------
+const GH = "https://api.github.com";
+
+function ghHeaders(token?: string, accept = "application/vnd.github.v3+json") {
+  const h: Record<string, string> = { "User-Agent": "Patty-Cognitive-Partner", Accept: accept };
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
+// Fetch from GitHub; if the token is rejected, retry once without it (public repos).
+async function ghFetch(url: string, token?: string, accept?: string): Promise<Response> {
+  let r = await fetch(url, { headers: ghHeaders(token, accept) });
+  if (r.status === 401 && token) r = await fetch(url, { headers: ghHeaders(undefined, accept) });
+  return r;
+}
+
+const encPath = (p: string) => p.split("/").map(encodeURIComponent).join("/");
+
+// ---------------------------------------------------------------------------
+// Health + token status (never sends the token to the browser)
+// ---------------------------------------------------------------------------
 app.get("/api/health", (_req, res) => {
   res.json({
     status: "online",
     partner: "Patty",
     authority: "Loretta",
-    model: "gemini-3.8-flash / gemini-3.1-pro-preview (Dual Model Tier Support)",
     timestamp: new Date().toISOString(),
   });
 });
 
-// Endpoint to report verified secrets and allow UserPreferences to synchronize authenticated tokens
 app.get("/api/github/secrets-status", async (_req, res) => {
   const token = process.env.GITHUB_TOKEN;
-  if (!token) {
-    return res.json({ hasSecretTokens: false, tokens: [], authenticatedUser: null });
-  }
+  if (!token) return res.json({ hasSecretTokens: false, tokens: [], authenticatedUser: null });
 
-  // Verify token against GitHub API to ensure validity
   try {
-    const userRes = await fetch("https://api.github.com/user", {
-      headers: {
-        "User-Agent": "Patty-Cognitive-Partner",
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
+    const userRes = await fetch(`${GH}/user`, { headers: ghHeaders(token) });
     if (userRes.ok) {
-      const userData = await userRes.json();
+      const u = await userRes.json();
       return res.json({
         hasSecretTokens: true,
-        tokens: [token],
-        authenticatedUser: userData.login || "Dessiidoo",
-        name: userData.name || "Loretta Chapman",
+        tokens: [], // the token stays on the server
+        authenticatedUser: u.login || null,
+        name: u.name || null,
       });
     }
   } catch (_) {}
@@ -193,148 +168,128 @@ app.get("/api/github/secrets-status", async (_req, res) => {
   return res.json({ hasSecretTokens: false, tokens: [], authenticatedUser: null });
 });
 
-// Helper to dynamically resolve and inspect a repository from Loretta's dual GitHub accounts
+// ---------------------------------------------------------------------------
+// Repo lookup for chat: reads the tree, README, and a handful of real files
+// ---------------------------------------------------------------------------
 async function resolveRepoAndFetchDetails(
   prompt: string,
   activeRepo: any,
   accounts: any[] = [],
   allRepos: any[] = []
-): Promise<{
-  detectedRepo: any | null;
-  contextText: string;
-}> {
-  let targetRepo: any = activeRepo;
+): Promise<{ detectedRepo: any | null; contextText: string }> {
+  let targetRepo: any = null;
 
-  // Search if prompt explicitly asks about a repo or mentions one
-  const words = prompt.split(/[\s,?:;"'()]+/);
-  if (!targetRepo || words.some((w) => w.toLowerCase().includes("repo"))) {
-    for (const r of allRepos) {
-      if (r.name && words.some((w) => w.toLowerCase() === r.name.toLowerCase())) {
-        targetRepo = r;
-        break;
+  // 1) A pasted GitHub URL wins
+  const urlMatch = prompt.match(/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?=[\s/?#)"']|$)/i);
+  if (urlMatch) {
+    const [, urlOwner, urlName] = urlMatch;
+    targetRepo =
+      allRepos.find(
+        (r) =>
+          r.name?.toLowerCase() === urlName.toLowerCase() &&
+          r.owner?.login?.toLowerCase() === urlOwner.toLowerCase()
+      ) || { name: urlName, owner: { login: urlOwner } };
+  }
+
+  // 2) Otherwise the active repo, or one named in the message
+  if (!targetRepo) {
+    targetRepo = activeRepo;
+    const words = prompt.split(/[\s,?:;"'()]+/);
+    if (!targetRepo || words.some((w) => w.toLowerCase().includes("repo"))) {
+      for (const r of allRepos) {
+        if (r.name && words.some((w) => w.toLowerCase() === r.name.toLowerCase())) {
+          targetRepo = r;
+          break;
+        }
       }
-    }
-
-    if (!targetRepo) {
-      const match = prompt.match(/(?:repo|repository|check|audit|inspect|review)\s+([a-zA-Z0-9_-]+)/i);
-      if (
-        match &&
-        match[1] &&
-        !["the", "my", "a", "an", "this", "our", "me", "for"].includes(match[1].toLowerCase())
-      ) {
-        const candidateName = match[1];
-        const found = allRepos.find((r) => r.name?.toLowerCase() === candidateName.toLowerCase());
-        if (found) {
-          targetRepo = found;
-        } else {
-          targetRepo = {
-            name: candidateName,
-            owner: { login: accounts[0]?.username || "Dessiidoo" },
-            default_branch: "main",
-          };
+      if (!targetRepo) {
+        const m = prompt.match(/(?:repo|repository|check|audit|inspect|review)\s+([a-zA-Z0-9_-]+)/i);
+        if (m && m[1] && !["the", "my", "a", "an", "this", "our", "me", "for"].includes(m[1].toLowerCase())) {
+          const found = allRepos.find((r) => r.name?.toLowerCase() === m[1].toLowerCase());
+          targetRepo = found || { name: m[1], owner: { login: accounts[0]?.username || "Dessiidoo" } };
         }
       }
     }
   }
 
-  if (!targetRepo) {
-    return { detectedRepo: null, contextText: "" };
-  }
+  if (!targetRepo) return { detectedRepo: null, contextText: "" };
 
-  const repoName = targetRepo.name;
-  const owner = targetRepo.owner?.login || accounts[0]?.username || "Dessiidoo";
+  const repoName: string = targetRepo.name;
+  const owner: string = targetRepo.owner?.login || accounts[0]?.username || "Dessiidoo";
   const matchingAccount =
-    accounts.find(
-      (a) => a.username?.toLowerCase() === owner.toLowerCase() || a.id === targetRepo.accountId
-    ) || accounts[0];
-  const token = matchingAccount?.token || process.env.GITHUB_TOKEN;
+    accounts.find((a) => a.username?.toLowerCase() === owner.toLowerCase() || a.id === targetRepo.accountId) ||
+    accounts[0];
+  const token: string | undefined = matchingAccount?.token || process.env.GITHUB_TOKEN;
+  const base = `${GH}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}`;
 
   let liveTree: string[] = [];
   let readmeSnippet = "";
-  let manifestSnippet = "";
-
-  const headers: Record<string, string> = {
-    "User-Agent": "Patty-Cognitive-Partner",
-    Accept: "application/vnd.github.v3+json",
-  };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const fileBlocks: string[] = [];
 
   try {
-    const branch = targetRepo.default_branch || "main";
-    let treeRes = await fetch(
-      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/git/trees/${branch}?recursive=1`,
-      { headers }
-    );
-
-    // If 401 Unauthorized, retry without token
-    if (treeRes.status === 401 && token) {
-      delete headers["Authorization"];
-      treeRes = await fetch(
-        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/git/trees/${branch}?recursive=1`,
-        { headers }
-      );
+    // Repo metadata (default branch etc.) when we don't already have it
+    if (!targetRepo.default_branch) {
+      const metaRes = await ghFetch(base, token);
+      if (metaRes.ok) targetRepo = { ...(await metaRes.json()), accountId: targetRepo.accountId };
     }
+    const branch = targetRepo.default_branch || "HEAD";
 
+    const treeRes = await ghFetch(`${base}/git/trees/${encodeURIComponent(branch)}?recursive=1`, token);
     if (treeRes.ok) {
       const treeData = await treeRes.json();
       if (Array.isArray(treeData?.tree)) {
-        liveTree = treeData.tree
-          .slice(0, 30)
-          .map((f: any) => `${f.type === "tree" ? "[DIR]" : "[FILE]"} ${f.path}`);
+        const entries: any[] = treeData.tree;
+        liveTree = entries.slice(0, 80).map((f) => `${f.type === "tree" ? "[DIR]" : "[FILE]"} ${f.path}`);
+
+        // Pick up to 8 real source files to read (entry points first)
+        const skip = /(^|\/)(node_modules|dist|build|\.git)\/|lock|\.(png|jpe?g|gif|svg|ico|woff2?|mp4|pdf)$/i;
+        const priority = /(^|\/)(server|app|main|index|types|storage)\.[a-z]+$|package\.json$/i;
+        const readable = entries.filter(
+          (f) => f.type === "blob" && !skip.test(f.path) && /\.(tsx?|jsx?|py|rs|go|json|css|html)$/i.test(f.path) && (f.size ?? 0) < 200000
+        );
+        const picked = [...readable.filter((f) => priority.test(f.path)), ...readable.filter((f) => !priority.test(f.path))].slice(0, 8);
+
+        const blocks = await Promise.all(
+          picked.map(async (f) => {
+            try {
+              const r = await ghFetch(`${base}/contents/${encPath(f.path)}`, token, "application/vnd.github.raw");
+              if (!r.ok) return "";
+              const text = await r.text();
+              const cut = text.length > 3000;
+              return `--- ${f.path}${cut ? " (first 3000 characters only)" : ""} ---\n${text.slice(0, 3000)}`;
+            } catch (_) {
+              return "";
+            }
+          })
+        );
+        fileBlocks.push(...blocks.filter(Boolean));
       }
     }
 
-    const readmeRes = await fetch(
-      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/readme`,
-      { headers: { ...headers, Accept: "application/vnd.github.raw" } }
-    );
-    if (readmeRes.ok) {
-      const text = await readmeRes.text();
-      readmeSnippet = text.slice(0, 2000);
-    }
-
-    const pkgRes = await fetch(
-      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/package.json`,
-      { headers: { ...headers, Accept: "application/vnd.github.raw" } }
-    );
-    if (pkgRes.ok) {
-      const text = await pkgRes.text();
-      manifestSnippet = text.slice(0, 1500);
-    }
+    const readmeRes = await ghFetch(`${base}/readme`, token, "application/vnd.github.raw");
+    if (readmeRes.ok) readmeSnippet = (await readmeRes.text()).slice(0, 2000);
   } catch (_) {}
 
-  const repositoryVerified = liveTree.length > 0;
+  const verified = liveTree.length > 0;
 
-const contextText = repositoryVerified
-  ? `[VERIFIED GITHUB REPOSITORY: ${owner}/${repoName}]
-- Retrieval Status: VERIFIED
-- Account: ${matchingAccount?.label || matchingAccount?.username || owner}
-- Primary Branch: ${targetRepo.default_branch || "main"}
-- Stars: ${targetRepo.stargazers_count || 0}
-- Forks: ${targetRepo.forks_count || 0}
-- Description: ${targetRepo.description || "No description provided"}
-- Verified Files in Retrieved Tree:
+  const contextText = verified
+    ? `[VERIFIED GITHUB REPOSITORY: ${owner}/${repoName}]
+- Branch: ${targetRepo.default_branch || "default"}
+- Description: ${targetRepo.description || "none"}
+- Files in tree (first 80):
   ${liveTree.join("\n  ")}
-${readmeSnippet ? `\n- VERIFIED README.md Content Preview:\n\`\`\`markdown\n${readmeSnippet}\n\`\`\`` : ""}
-${manifestSnippet ? `\n- VERIFIED package.json Content Preview:\n\`\`\`json\n${manifestSnippet}\n\`\`\`` : ""}
-
-IMPORTANT EVIDENCE BOUNDARY:
-Only the information explicitly contained above was retrieved from GitHub.
-A filename appearing in the tree proves only that the file exists.
-It does NOT mean its contents were retrieved or inspected.
-Never quote, reconstruct, summarize, or cite source code that is not explicitly present in this context.
-Never invent line numbers.`
-  : `[GITHUB REPOSITORY RETRIEVAL FAILED OR RETURNED NO VERIFIED TREE: ${owner}/${repoName}]
-- Retrieval Status: UNVERIFIED
-- No repository file tree has been verified.
-- No source-code contents may be inferred.
-- Do not invent filenames, code, functions, dependencies, vulnerabilities, or line numbers.
-- Report repository-specific claims as [Unknown] until actual repository evidence is retrieved.`;
+${readmeSnippet ? `\n- README preview:\n${readmeSnippet}\n` : ""}
+${fileBlocks.length ? `\n- FILE CONTENTS I WAS ABLE TO READ:\n${fileBlocks.join("\n\n")}\n` : ""}
+EVIDENCE BOUNDARY: You have only what is written above. Files listed in the tree but not shown under FILE CONTENTS have not been read; you only know they exist. Never quote or describe code that isn't shown above, and never invent line numbers.`
+    : `[COULD NOT READ REPOSITORY: ${owner}/${repoName}]
+Nothing was retrieved. Tell Loretta plainly that you couldn't read this repo (wrong name, private repo without a token, or GitHub unavailable). Do not guess at its contents.`;
 
   return { detectedRepo: targetRepo, contextText };
 }
 
-// Main Patty Chat / Reasoning endpoint
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
 app.post("/api/patty/chat", async (req, res) => {
   try {
     const {
@@ -356,101 +311,69 @@ app.post("/api/patty/chat", async (req, res) => {
       return res.status(400).json({ error: "Prompt or file context is required." });
     }
 
-    // Resolve any repository mentioned in Loretta's prompt or active repository
     const repoInfo = await resolveRepoAndFetchDetails(prompt || "", activeRepo, accounts, allRepos);
 
-    // Construct enriched context for Loretta's twin mind
     const contextLines: string[] = [];
     if (ownerOverride) {
-      contextLines.push("[CRITICAL EVENT: IMMEDIATE OWNER OVERRIDE INVOKED BY LORETTA CHAPMAN. PIVOT IMMEDIATELY ACCORDING TO HER EXACT WORDS.]");
+      contextLines.push("[Loretta invoked an owner override. Follow her exact words right away.]");
     }
-
     if (repoInfo.contextText) {
       contextLines.push(repoInfo.contextText);
     } else if (activeRepo) {
-      contextLines.push(`[ACTIVE GITHUB REPOSITORY CONTEXT: Name=${activeRepo.name}, Description=${activeRepo.description || "N/A"}, Language=${activeRepo.language || "N/A"}, Stars=${activeRepo.stargazers_count || 0}, Branch=${activeRepo.default_branch || "main"}${activeRepo.accountLabel ? `, Account=${activeRepo.accountLabel}` : ""}]`);
+      contextLines.push(
+        `[Active repository (metadata only, contents not read): ${activeRepo.name}${activeRepo.description ? ` - ${activeRepo.description}` : ""}${activeRepo.language ? `, ${activeRepo.language}` : ""}]`
+      );
     }
-
-    if (accounts.length > 0) {
-      const accSummaries = accounts.map((a: any) => `${a.label || "Account"}: @${a.username || "loretta"} (Token: ${a.token ? "Configured" : "Public/Unauthenticated"})`);
-      contextLines.push(`[LORETTA'S DUAL GITHUB ACCOUNTS CONNECTED:\n${accSummaries.join("\n")}]`);
-    }
-
     if (fileContext) {
-      contextLines.push(`[INSPECTED CODE FILE: Path=${fileContext.path || "code snippet"}]\n\`\`\`${fileContext.language || ""}\n${fileContext.content?.slice(0, 15000)}\n\`\`\``);
+      contextLines.push(
+        `[FILE LORETTA SHARED: ${fileContext.path || "code snippet"}]\n\`\`\`${fileContext.language || ""}\n${fileContext.content?.slice(0, 15000)}\n\`\`\``
+      );
     }
     if (expandDecision) {
-      contextLines.push("[DIRECTIVE: Loretta has requested a full, granular elaboration of the previous decision. Provide deep mathematical, architectural, and workflow simulation.]");
+      contextLines.push("[Loretta asked you to elaborate on your previous reply. Go deeper, still in plain conversation.]");
     }
 
-    // Format chat history for Gemini contents
     const contents: any[] = [];
-
-    // Include recent history (last 10 messages for speed and context window)
-    const recentHistory = history.slice(-10);
-    for (const msg of recentHistory) {
+    for (const msg of history.slice(-10)) {
       contents.push({
         role: msg.role === "assistant" ? "model" : "user",
         parts: [{ text: msg.content }],
       });
     }
-
-    // Current turn
-    const combinedCurrentPrompt = contextLines.length > 0
-      ? `${contextLines.join("\n\n")}\n\nLoretta: ${prompt}`
-      : `Loretta: ${prompt}`;
-
     contents.push({
       role: "user",
-      parts: [{ text: combinedCurrentPrompt }],
+      parts: [{ text: contextLines.length ? `${contextLines.join("\n\n")}\n\nLoretta: ${prompt}` : `Loretta: ${prompt}` }],
     });
-
-    const preferredModel = modelTier === "pro" ? "gemini-3.1-pro-preview" : "gemini-3.8-flash";
 
     const outputText = await callGeminiWithFallback({
       contents,
       systemInstruction: PATTY_SYSTEM_INSTRUCTION,
       temperature: 0.7,
-      preferredModel,
+      preferredModel: modelTier === "pro" ? "gemini-3.1-pro-preview" : "gemini-3.8-flash",
       customApiKey: apiKeyToUse || undefined,
     });
 
-    // Parse sections if available for UI presentation
-    const parsedSections = parsePattySections(outputText);
-
     return res.json({
       text: outputText,
-      sections: parsedSections,
+      sections: parsePattySections(outputText),
       detectedRepo: repoInfo.detectedRepo,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
     console.error("Error in /api/patty/chat:", error);
-    let readableError = error?.message || "Failed to process Patty twin mind response";
+    let readableError = error?.message || "Patty couldn't process that.";
     try {
       const parsed = JSON.parse(readableError);
-      if (parsed?.error?.message) {
-        readableError = parsed.error.message;
-      }
+      if (parsed?.error?.message) readableError = parsed.error.message;
     } catch (_) {}
-
-    return res.status(500).json({
-      error: readableError,
-    });
+    return res.status(500).json({ error: readableError });
   }
 });
 
-// Helper to structure output format sections
+// Kept so the existing front end keeps working. Plain replies have no "###"
+// headings, so everything lands in directive/response as normal text.
 function parsePattySections(rawText: string) {
-  const sections: {
-    directive: string;
-    response: string;
-    prediction: string;
-    primaryRisk: string;
-    memoryNotes: string;
-    decision: string;
-    elaboration: string;
-  } = {
+  const sections = {
     directive: "",
     response: "",
     prediction: "",
@@ -470,308 +393,159 @@ function parsePattySections(rawText: string) {
     sections.directive = directiveMatch[1].trim();
     sections.response = sections.directive;
   }
-  // Prediction section is intentionally omitted as requested by Loretta
-  sections.prediction = "";
-
   if (riskMatch) sections.primaryRisk = riskMatch[1].trim();
   if (memoryMatch) sections.memoryNotes = memoryMatch[1].trim();
   if (decisionMatch) sections.decision = decisionMatch[1].trim();
   if (elaborationMatch) sections.elaboration = elaborationMatch[1].trim();
 
-  // If no sections were parsed, fallback cleanly to raw text in directive and response
   if (!sections.directive && !sections.primaryRisk && !sections.decision) {
     sections.directive = rawText.trim();
     sections.response = rawText.trim();
   }
-
   return sections;
 }
 
-// GitHub API proxy & assessment endpoints - Multi-Account Support
+// ---------------------------------------------------------------------------
+// GitHub proxy endpoints (real data only; failures are reported, never faked)
+// ---------------------------------------------------------------------------
 app.post("/api/github/multi-repos", async (req, res) => {
   const { accounts } = req.body as {
     accounts: Array<{ id: string; username: string; label: string; token?: string; isConfigured?: boolean }>;
   };
 
-  const targetAccounts = (Array.isArray(accounts) && accounts.length > 0)
-    ? accounts
-    : [{ id: "account_1", username: "Dessiidoo", label: "Primary GitHub", isConfigured: true }];
+  const targetAccounts =
+    Array.isArray(accounts) && accounts.length > 0
+      ? accounts
+      : [{ id: "account_1", username: "Dessiidoo", label: "Primary GitHub", isConfigured: true }];
 
-  try {
-    let allRepos: any[] = [];
+  const allRepos: any[] = [];
+  const errors: string[] = [];
 
-    for (let i = 0; i < targetAccounts.length; i++) {
-      const acc = targetAccounts[i];
-      if (!acc.username || !acc.username.trim()) continue;
-      const username = acc.username.trim();
+  for (let i = 0; i < targetAccounts.length; i++) {
+    const acc = targetAccounts[i];
+    if (!acc.username || !acc.username.trim()) continue;
+    const username = acc.username.trim();
+    const label = acc.label || username;
+    let token = acc.token?.trim() || (i === 0 ? process.env.GITHUB_TOKEN : undefined);
+    let loaded = false;
 
-      // Only attach token if explicitly set on account, or use process.env.GITHUB_TOKEN for primary account
-      let token = acc.token?.trim() || (i === 0 ? process.env.GITHUB_TOKEN : undefined);
-      let loaded = false;
-
-      // 1. If primary account or token matches authenticated user, fetch /user/repos directly (retrieves all 100+ real repos)
-      if (token && (i === 0 || username.toLowerCase() === "dessiidoo" || username.toLowerCase() === "loretta")) {
-        try {
-          const userReposRes = await fetch(
-            `https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`,
-            {
-              headers: {
-                "User-Agent": "Patty-Cognitive-Partner",
-                Accept: "application/vnd.github.v3+json",
-                Authorization: `Bearer ${token}`,
-              },
-            }
-          );
-          if (userReposRes.ok) {
-            const data = await userReposRes.json();
-            if (Array.isArray(data) && data.length > 0) {
-              const labeledData = data.map((r: any) => ({
-                ...r,
-                accountId: acc.id,
-                accountLabel: acc.label || username,
-              }));
-              allRepos = allRepos.concat(labeledData);
-              loaded = true;
-            }
-          } else if (userReposRes.status === 401) {
-            // Token is bad/expired, clear it for subsequent attempts
-            token = undefined;
+    // Authenticated user's own repos (includes private ones)
+    if (token && (i === 0 || username.toLowerCase() === "dessiidoo")) {
+      try {
+        const r = await fetch(`${GH}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`, {
+          headers: ghHeaders(token),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          if (Array.isArray(data) && data.length > 0) {
+            allRepos.push(...data.map((repo: any) => ({ ...repo, accountId: acc.id, accountLabel: label })));
+            loaded = true;
           }
-        } catch (_) {}
-      }
-
-      // 2. Fetch /users/:username/repos
-      if (!loaded) {
-        try {
-          const headers: Record<string, string> = {
-            "User-Agent": "Patty-Cognitive-Partner",
-            Accept: "application/vnd.github.v3+json",
-          };
-          if (token) {
-            headers["Authorization"] = `Bearer ${token}`;
-          }
-
-          let ghRes = await fetch(
-            `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
-            { headers }
-          );
-
-          // If token returned 401, retry without Authorization header
-          if (ghRes.status === 401 && token) {
-            delete headers["Authorization"];
-            ghRes = await fetch(
-              `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
-              { headers }
-            );
-          }
-
-          if (ghRes.ok) {
-            const data = await ghRes.json();
-            if (Array.isArray(data)) {
-              const labeledData = data.map((r: any) => ({
-                ...r,
-                accountId: acc.id,
-                accountLabel: acc.label || username,
-              }));
-              allRepos = allRepos.concat(labeledData);
-              loaded = true;
-            }
-          }
-        } catch (_) {}
-      }
-
-      // 3. Fallback: If username doesn't exist on GitHub (e.g. loretta-labs) or network is offline,
-      // load curated ecosystem repos for this account
-      if (!loaded) {
-        const mockRepos = generateLorettaEcosystem(username).map((r) => ({
-          ...r,
-          accountId: acc.id,
-          accountLabel: acc.label || username,
-        }));
-        allRepos = allRepos.concat(mockRepos);
-      }
+        } else if (r.status === 401) {
+          token = undefined;
+        }
+      } catch (_) {}
     }
 
-    // Deduplicate by repo name and sort by updated_at
-    const seen = new Set();
-    const deduplicated = allRepos.filter((r) => {
-      const key = `${r.owner?.login || ""}/${r.name}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    return res.json({
-      repos: deduplicated,
-      totalCount: deduplicated.length,
-      accountCount: targetAccounts.length,
-    });
-  } catch (error: any) {
-    const fallback = generateLorettaEcosystem("loretta");
-    return res.json({ repos: fallback, totalCount: fallback.length });
+    // Public repos for the username
+    if (!loaded) {
+      try {
+        const r = await ghFetch(`${GH}/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`, token);
+        if (r.ok) {
+          const data = await r.json();
+          if (Array.isArray(data)) {
+            allRepos.push(...data.map((repo: any) => ({ ...repo, accountId: acc.id, accountLabel: label })));
+            loaded = true;
+          }
+        } else {
+          errors.push(`${username}: GitHub returned ${r.status}`);
+        }
+      } catch (_) {
+        errors.push(`${username}: could not reach GitHub`);
+      }
+    }
   }
+
+  const seen = new Set<string>();
+  const repos = allRepos.filter((r) => {
+    const key = `${r.owner?.login || ""}/${r.name}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return res.json({ repos, totalCount: repos.length, accountCount: targetAccounts.length, errors });
 });
 
-// Backward-compatible single query endpoint
 app.get("/api/github/repos", async (req, res) => {
-  const username = (req.query.username as string) || "loretta";
-  let token = (req.headers["x-github-token"] as string) || process.env.GITHUB_TOKEN;
+  const username = (req.query.username as string) || "";
+  const token = (req.headers["x-github-token"] as string) || process.env.GITHUB_TOKEN;
+  if (!username) return res.status(400).json({ repos: [], error: "username is required" });
 
   try {
-    const headers: Record<string, string> = {
-      "User-Agent": "Patty-Cognitive-Partner",
-      Accept: "application/vnd.github.v3+json",
-    };
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-
-    let ghRes = await fetch(
-      `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
-      { headers }
-    );
-
-    if (ghRes.status === 401 && token) {
-      delete headers["Authorization"];
-      ghRes = await fetch(
-        `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`,
-        { headers }
-      );
-    }
-
-    if (ghRes.ok) {
-      const data = await ghRes.json();
-      return res.json({ repos: data, source: "live_github" });
-    } else {
-      // Fallback curated repositories reflecting Loretta's 160+ project ecosystem
-      const mockLorettaRepos = generateLorettaEcosystem(username);
-      return res.json({
-        repos: mockLorettaRepos,
-        source: "ecosystem_index",
-        warning: `GitHub API returned ${ghRes.status}. Using Loretta's 160+ Project Knowledge Graph.`,
-      });
-    }
-  } catch (error: any) {
-    const mockLorettaRepos = generateLorettaEcosystem(username);
-    return res.json({
-      repos: mockLorettaRepos,
-      source: "ecosystem_index",
-      note: "Offline/Fallback repository catalog initialized.",
-    });
+    const r = await ghFetch(`${GH}/users/${encodeURIComponent(username)}/repos?per_page=100&sort=updated`, token);
+    if (r.ok) return res.json({ repos: await r.json(), source: "live_github" });
+    return res.status(r.status).json({ repos: [], error: `GitHub returned ${r.status}` });
+  } catch (_) {
+    return res.status(502).json({ repos: [], error: "Could not reach GitHub" });
   }
 });
 
-// Fetch repository contents/tree
 app.get("/api/github/tree", async (req, res) => {
-  const { owner = "loretta", repo = "core-engine" } = req.query as { owner?: string; repo?: string };
+  const { owner, repo } = req.query as { owner?: string; repo?: string };
+  if (!owner || !repo) return res.status(400).json({ error: "owner and repo are required" });
   const token = (req.headers["x-github-token"] as string) || process.env.GITHUB_TOKEN;
 
   try {
-    const headers: Record<string, string> = {
-      "User-Agent": "Patty-Cognitive-Partner",
-      Accept: "application/vnd.github.v3+json",
-    };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    let treeRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`,
-      { headers }
+    const r = await ghFetch(
+      `${GH}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/HEAD?recursive=1`,
+      token
     );
-
-    if (treeRes.status === 401 && token) {
-      delete headers["Authorization"];
-      treeRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`,
-        { headers }
-      );
-    }
-
-    if (treeRes.ok) {
-      const data = await treeRes.json();
+    if (r.ok) {
+      const data = await r.json();
       return res.json({ tree: data.tree, truncated: data.truncated });
     }
-
-    // Fallback sample file tree for Loretta's project
-    const sampleTree = [
-      { path: "README.md", type: "blob", size: 1420 },
-      { path: "package.json", type: "blob", size: 890 },
-      { path: "src/index.ts", type: "blob", size: 3200 },
-      { path: "src/core/engine.ts", type: "blob", size: 4500 },
-      { path: "src/core/workflow.ts", type: "blob", size: 2800 },
-      { path: "src/services/api.ts", type: "blob", size: 1950 },
-      { path: "tests/engine.spec.ts", type: "blob", size: 2100 },
-      { path: ".github/workflows/ci.yml", type: "blob", size: 640 },
-    ];
-    return res.json({ tree: sampleTree, simulated: true });
+    return res.status(r.status).json({ error: `Couldn't read ${owner}/${repo} from GitHub (status ${r.status}).` });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    return res.status(502).json({ error: e.message || "Could not reach GitHub" });
   }
 });
 
-// Fetch specific file content
 app.post("/api/github/file", async (req, res) => {
-  const { owner = "loretta", repo = "core-engine", path: filePath = "README.md" } = req.body;
+  const { owner, repo, path: filePath } = req.body || {};
+  if (!owner || !repo || !filePath) return res.status(400).json({ error: "owner, repo and path are required" });
   const token = (req.headers["x-github-token"] as string) || process.env.GITHUB_TOKEN;
 
   try {
-    const headers: Record<string, string> = {
-      "User-Agent": "Patty-Cognitive-Partner",
-      Accept: "application/vnd.github.v3.raw",
-    };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    let fileRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
-      { headers }
+    const r = await ghFetch(
+      `${GH}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encPath(filePath)}`,
+      token,
+      "application/vnd.github.v3.raw"
     );
-
-    if (fileRes.status === 401 && token) {
-      delete headers["Authorization"];
-      fileRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
-        { headers }
-      );
-    }
-
-    if (fileRes.ok) {
-      const content = await fileRes.text();
-      return res.json({ content, path: filePath });
-    }
-
-    // Fallback contextual file
-    const sampleContent = generateSampleFile(filePath, repo);
-    return res.json({ content: sampleContent, path: filePath, simulated: true });
+    if (r.ok) return res.json({ content: await r.text(), path: filePath });
+    return res.status(r.status).json({ error: `Couldn't read ${filePath} from GitHub (status ${r.status}).` });
   } catch (e: any) {
-    return res.json({
-      content: generateSampleFile(filePath, repo),
-      path: filePath,
-      simulated: true,
-    });
+    return res.status(502).json({ error: e.message || "Could not reach GitHub" });
   }
 });
 
-// Patty Assess Repository & Write README / Minor Fix
+// ---------------------------------------------------------------------------
+// Assess / README / minor fix
+// ---------------------------------------------------------------------------
 app.post("/api/github/assess", async (req, res) => {
   try {
     const { repo, fileTree = [], action = "assess" } = req.body;
-    const ai = getGemini();
 
     const prompt = `
-Action: ${action.toUpperCase()}
-Repository: ${repo?.name || "Target Project"}
-Description: ${repo?.description || "Software system in Loretta's ecosystem"}
-Language: ${repo?.language || "TypeScript / Python / Rust"}
-Files: ${fileTree.map((f: any) => f.path).slice(0, 35).join(", ")}
+Action: ${String(action).toUpperCase()}
+Repository: ${repo?.name || "unknown"}
+Description: ${repo?.description || "none provided"}
+Language: ${repo?.language || "unknown"}
+Files (names only, contents not read): ${fileTree.map((f: any) => f.path).slice(0, 35).join(", ")}
 
-Directive:
-As Patty, assess this project with technical authority. 
-If action is 'readme': write a high-grade, production-ready, beautiful README.md with architecture overview, quickstart, technical decisions, and roadmaps.
-If action is 'improvements': identify architecture bottlenecks, performance enhancements, missing CI/CD, and scalability fixes.
-If action is 'minor_fix': propose a clean, surgical code diff or configuration patch.
-Always preserve:
-- Sole Authority: Loretta
-- Labeled predictions on what will break or scale next
-- Concrete decisions ready for Loretta's command
+If action is 'readme': write a clear README.md from what the file names and description support. Don't claim features you can't see.
+If action is 'improvements': list likely improvements, and say which are guesses from file names.
+If action is 'minor_fix': say what you'd need to see first; don't invent code.
 `;
 
     const resultText = await callGeminiWithFallback({
@@ -779,10 +553,7 @@ Always preserve:
       systemInstruction: PATTY_SYSTEM_INSTRUCTION,
     });
 
-    res.json({
-      result: resultText,
-      timestamp: new Date().toISOString(),
-    });
+    res.json({ result: resultText, timestamp: new Date().toISOString() });
   } catch (error: any) {
     let readableError = error?.message || "Failed to assess project";
     try {
@@ -793,145 +564,10 @@ Always preserve:
   }
 });
 
-// Helper to seed Loretta's 160+ project ecosystem
-function generateLorettaEcosystem(username: string) {
-  const categories = [
-    { prefix: "neural-", lang: "Python", tags: ["machine-learning", "gemini", "inference"] },
-    { prefix: "hyper-", lang: "Rust", tags: ["distributed-systems", "low-latency", "concurrency"] },
-    { prefix: "poly-", lang: "TypeScript", tags: ["full-stack", "react", "tailwindcss"] },
-    { prefix: "sol-", lang: "Solidity", tags: ["web3", "smart-contracts", "defi"] },
-    { prefix: "cloud-", lang: "Go", tags: ["kubernetes", "microservices", "grpc"] },
-    { prefix: "data-", lang: "Python", tags: ["etl", "spark", "real-time-streaming"] },
-    { prefix: "sec-", lang: "Rust", tags: ["zero-knowledge", "cryptography", "audit"] },
-    { prefix: "agent-", lang: "TypeScript", tags: ["autonomous-agents", "llm-orchestration"] },
-  ];
-
-  const repos: any[] = [];
-  const coreNames = [
-    { name: "loretta-twin-consciousness", desc: "Digital twin mental model and cognition engine", lang: "TypeScript", stars: 142 },
-    { name: "quantum-vector-pipeline", desc: "Ultra-fast approximate nearest neighbor vector indexing", lang: "Rust", stars: 98 },
-    { name: "distributed-state-raft", desc: "Formal verification and Raft consensus in Go", lang: "Go", stars: 215 },
-    { name: "omni-compiler-ast", desc: "Modular AST transpiler for reactive DSLs", lang: "Rust", stars: 84 },
-    { name: "cerebral-cache-layer", desc: "In-memory predictive cache with eviction telemetry", lang: "C++", stars: 167 },
-    { name: "agentic-event-bus", desc: "Sub-millisecond event streaming architecture for autonomous swarms", lang: "TypeScript", stars: 312 },
-    { name: "zk-governance-contracts", desc: "Zero-knowledge vote aggregation with cryptographic proof verification", lang: "Solidity", stars: 120 },
-    { name: "loretta-infra-terraform", desc: "Multi-cloud infrastructure as code for 160+ service mesh", lang: "HCL", stars: 45 },
-  ];
-
-  coreNames.forEach((r, idx) => {
-    repos.push({
-      id: idx + 1,
-      name: r.name,
-      owner: { login: username },
-      description: r.desc,
-      language: r.lang,
-      stargazers_count: r.stars,
-      forks_count: Math.floor(r.stars / 4),
-      updated_at: new Date(Date.now() - idx * 86400000 * 2).toISOString(),
-      default_branch: "main",
-      open_issues_count: Math.floor(idx % 5),
-    });
-  });
-
-  // Seed up to total ecosystem count for realistic representation of 160+ repos
-  for (let i = 9; i <= 164; i++) {
-    const cat = categories[i % categories.length];
-    repos.push({
-      id: i,
-      name: `${cat.prefix}service-${i.toString().padStart(3, "0")}`,
-      owner: { login: username },
-      description: `Modular ${cat.lang} subsystem for high-throughput ${cat.tags.join(" & ")}.`,
-      language: cat.lang,
-      stargazers_count: Math.floor((170 - i) * 1.5 + (i % 7)),
-      forks_count: Math.floor((170 - i) * 0.4),
-      updated_at: new Date(Date.now() - (i * 3600000 * 12)).toISOString(),
-      default_branch: "main",
-      open_issues_count: i % 4,
-    });
-  }
-
-  return repos;
-}
-
-function generateSampleFile(filePath: string, repo: string) {
-  if (filePath.endsWith("README.md")) {
-    return `# ${repo}
-
-> Core engineering module in Loretta's ecosystem. Sole Authority: Loretta.
-
-## Overview
-This repository contains foundational service architecture designed for low-latency cognitive processing and continuous pipeline deployment.
-
-## Architecture
-- **Language**: TypeScript / Rust / Python
-- **Runtime**: Node.js & Docker / WebAssembly
-- **State**: Distributed consensus with local memory cache
-
-## Quickstart
-\`\`\`bash
-npm install
-npm test
-npm run dev
-\`\`\`
-
-## Patty Cognitive Assessment
-- **Status**: Stable
-- **Predicted Optimization**: Implement zero-copy byte buffers for streaming endpoints.
-`;
-  }
-
-  if (filePath.endsWith("package.json")) {
-    return JSON.stringify(
-      {
-        name: repo,
-        version: "1.4.0",
-        description: "Loretta's core module",
-        main: "dist/index.js",
-        scripts: {
-          build: "tsc",
-          test: "vitest run",
-          lint: "eslint .",
-        },
-        dependencies: {
-          dotenv: "^16.4.5",
-          zod: "^3.22.4",
-        },
-      },
-      null,
-      2
-    );
-  }
-
-  return `// ${filePath}
-// Author: Loretta
-// Managed & Audited by Patty
-
-export interface EngineConfig {
-  workerThreads: number;
-  bufferSizeKb: number;
-  autoHeal: boolean;
-}
-
-export class CoreService {
-  private status: 'idle' | 'running' | 'degraded' = 'idle';
-
-  constructor(private config: EngineConfig) {}
-
-  public async start(): Promise<void> {
-    console.log('[Loretta System] Initializing node with config:', this.config);
-    this.status = 'running';
-  }
-
-  public getStatus() {
-    return this.status;
-  }
-}
-`;
-}
-
-// Start Server with Vite Middleware
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
 async function startServer() {
-  // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -947,7 +583,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[Patty Twin Mind Server] Listening on http://0.0.0.0:${PORT}`);
+    console.log(`[Patty] Listening on http://0.0.0.0:${PORT}`);
   });
 }
 
